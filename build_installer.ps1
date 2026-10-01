@@ -1,5 +1,5 @@
 # Gera o instalador do LabelImg localmente (para testes).
-# Os releases oficiais sao gerados pelo GitHub Actions (.github/workflows/release.yml).
+# Para gerar e publicar o release no GitHub use publish_release.ps1.
 #
 # Uso (na raiz do projeto, com o venv criado):
 #   powershell -ExecutionPolicy Bypass -File .\build_installer.ps1

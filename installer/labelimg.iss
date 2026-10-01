@@ -1,7 +1,7 @@
 ; Instalador do LabelImg - Inno Setup 6
 ;
 ; Empacota a pasta gerada pelo PyInstaller (dist\LabelImg). A versão é passada
-; na linha de comando pelo build (build_installer.ps1 / GitHub Actions):
+; na linha de comando pelo build (build_installer.ps1):
 ;   ISCC.exe /DMyAppVersion=1.9.0 installer\labelimg.iss
 
 #ifndef MyAppVersion

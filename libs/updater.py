@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Verificação, download e instalação de novas versões publicadas no GitHub.
 
-Os instaladores (Inno Setup) são publicados pelo GitHub Actions
-(.github/workflows/release.yml) como assets dos releases de UPDATE_REPO,
+Os instaladores (Inno Setup) são gerados e publicados localmente
+(publish_release.ps1) como assets dos releases de UPDATE_REPO,
 junto com um arquivo .sha256 de cada um.
 """
 
@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (QApplication, QDialog, QHBoxLayout, QLabel,
 
 from libs.__init__ import __version__ as APP_VERSION
 
-# Repositório público onde o GitHub Actions publica os instaladores.
+# Repositório público onde os instaladores são publicados (publish_release.ps1).
 UPDATE_REPO = 'FialhoTKL/labelImg-master'
 
 API_LATEST_RELEASE = 'https://api.github.com/repos/%s/releases/latest' % UPDATE_REPO
