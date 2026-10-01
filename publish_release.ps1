@@ -44,8 +44,13 @@ $files = @("installer\Output\$setupName", "installer\Output\$setupName.sha256")
 foreach ($f in $files) { if (-not (Test-Path $f)) { throw "Arquivo nao encontrado: $f" } }
 
 # Token da credencial do git para github.com
-$cred = "protocol=https`nhost=github.com`n`n" | git credential fill
-$token = ($cred | Where-Object { $_ -like "password=*" }) -replace "^password=", ""
+# (entrada via arquivo + redirecionamento do cmd: o pipe do PowerShell 5.1
+# altera o texto e o git recusa com "missing protocol field")
+$credIn = [IO.Path]::GetTempFileName()
+[IO.File]::WriteAllText($credIn, "protocol=https`nhost=github.com`n`n", (New-Object Text.UTF8Encoding $false))
+try { $cred = cmd /c "git credential fill < `"$credIn`"" } finally { Remove-Item $credIn }
+$token = $cred | Where-Object { $_ -like "password=*" } | Select-Object -First 1
+if ($token) { $token = $token.Substring(9).Trim() }
 if (-not $token) { throw "Credencial do GitHub nao encontrada (faca um git push antes para autenticar)." }
 
 $headers = @{
