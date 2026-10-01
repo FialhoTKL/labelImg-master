@@ -8,6 +8,20 @@ from libs.constants import DEFAULT_ENCODING
 TXT_EXT = '.txt'
 ENCODE_METHOD = DEFAULT_ENCODING
 
+
+def read_classes_file(path):
+    """Read classes.txt. Older versions wrote it in the Windows ANSI code page
+    (cp1252) instead of UTF-8, so accented class names (e.g. "ç") failed to
+    decode; fall back to cp1252 for those files. They are rewritten as UTF-8
+    on the next save."""
+    with open(path, 'rb') as f:
+        raw = f.read()
+    try:
+        text = raw.decode(ENCODE_METHOD)
+    except UnicodeDecodeError:
+        text = raw.decode('cp1252', errors='replace')
+    return text.lstrip(u'\ufeff').replace('\r\n', '\n').strip('\n').split('\n')
+
 class YOLOWriter:
 
     def __init__(self, folder_name, filename, img_size, database_src='Unknown', local_img_path=None):
@@ -55,12 +69,12 @@ class YOLOWriter:
             out_file = open(
             self.filename + TXT_EXT, 'w', encoding=ENCODE_METHOD)
             classes_file = os.path.join(os.path.dirname(os.path.abspath(self.filename)), "classes.txt")
-            out_class_file = open(classes_file, 'w')
+            out_class_file = open(classes_file, 'w', encoding=ENCODE_METHOD)
 
         else:
             out_file = codecs.open(target_file, 'w', encoding=ENCODE_METHOD)
             classes_file = os.path.join(os.path.dirname(os.path.abspath(target_file)), "classes.txt")
-            out_class_file = open(classes_file, 'w')
+            out_class_file = open(classes_file, 'w', encoding=ENCODE_METHOD)
 
 
         for box in self.box_list:
@@ -94,8 +108,7 @@ class YoloReader:
 
         # print (file_path, self.class_list_path)
 
-        classes_file = open(self.class_list_path, 'r')
-        self.classes = classes_file.read().strip('\n').split('\n')
+        self.classes = read_classes_file(self.class_list_path)
 
         # print (self.classes)
 

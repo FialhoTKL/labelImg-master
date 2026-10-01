@@ -45,11 +45,12 @@ from libs.toolBar import ToolBar
 from libs.pascal_voc_io import PascalVocReader
 from libs.pascal_voc_io import XML_EXT
 from libs.yolo_io import YoloReader
-from libs.yolo_io import TXT_EXT
+from libs.yolo_io import TXT_EXT, read_classes_file
 from libs.create_ml_io import CreateMLReader
 from libs.create_ml_io import JSON_EXT
 from libs.ustr import ustr
 from libs.hashableQListWidgetItem import HashableQListWidgetItem
+from libs import updater
 
 __appname__ = 'labelImg'
 
@@ -312,6 +313,8 @@ class MainWindow(QMainWindow, WindowMixin):
         help_default = action(get_str('tutorialDefault'), self.show_default_tutorial_dialog, None, 'help', get_str('tutorialDetail'))
         show_info = action(get_str('info'), self.show_info_dialog, None, 'help', get_str('info'))
         show_shortcut = action(get_str('shortcut'), self.show_shortcuts_dialog, None, 'help', get_str('shortcut'))
+        check_update = action(u'Verificar atualizações', partial(self.check_for_update, True), None, 'help',
+                              u'Procura uma versão nova no GitHub')
 
         zoom = QWidgetAction(self)
         zoom.setDefaultWidget(self.zoom_widget)
@@ -444,7 +447,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
         add_actions(self.menus.file,
                     (open, open_dir, change_save_dir, open_annotation, copy_prev_bounding, self.menus.recentFiles, save, save_format, save_as, close, reset_all, delete_image, move_labeled, quit))
-        add_actions(self.menus.help, (help_default, show_info, show_shortcut))
+        add_actions(self.menus.help, (help_default, show_info, show_shortcut, None, check_update))
         add_actions(self.menus.view, (
             self.auto_saving,
             self.single_class_mode,
@@ -570,6 +573,12 @@ class MainWindow(QMainWindow, WindowMixin):
 
         if self.session_restore_img_path:
             self.queue_event(self.finish_session_restore)
+
+        # Checagem automática só no app instalado (rodando pelo código-fonte
+        # não faz sentido instalar por cima). Atrasada para não segurar a abertura.
+        self.update_worker = None
+        if updater.FROZEN:
+            QTimer.singleShot(1500, self.check_for_update)
 
     def keyReleaseEvent(self, event):
         if event.key() == Qt.Key_Control:
@@ -730,6 +739,43 @@ class MainWindow(QMainWindow, WindowMixin):
         from libs.__init__ import __version__
         msg = u'Name:{0} \nApp Version:{1} \n{2} '.format(__appname__, __version__, sys.version_info)
         QMessageBox.information(self, u'Information', msg)
+
+    def check_for_update(self, manual=False, *_):
+        """Consulta o GitHub em segundo plano. Na checagem automática, falhas e
+        'já atualizado' são silenciosos; na manual, o usuário recebe resposta."""
+        if self.update_worker and self.update_worker.isRunning():
+            return
+        self.update_worker = updater.CheckUpdateWorker()
+        self.update_worker.update_available.connect(partial(self._on_update_available, manual))
+        self.update_worker.up_to_date.connect(partial(self._on_update_check_done, manual, None))
+        self.update_worker.error.connect(partial(self._on_update_check_done, manual))
+        self.update_worker.start()
+
+    def _on_update_available(self, manual, info):
+        # Versão que o usuário pediu para ignorar só reaparece na checagem manual.
+        if not manual and self.settings.get(SETTING_IGNORED_VERSION) == info['version']:
+            return
+        if not updater.FROZEN:
+            QMessageBox.information(
+                self, u'Atualização disponível',
+                u'Versão %s disponível.\n\nVocê está rodando pelo código-fonte; a instalação '
+                u'automática só funciona no programa instalado.\n\n%s' % (info['version'], info.get('page', '')))
+            return
+        updater.UpdateDialog(info, on_ignore=self._ignore_version, parent=self).exec_()
+
+    def _ignore_version(self, version):
+        self.settings[SETTING_IGNORED_VERSION] = version
+        self.settings.save()
+
+    def _on_update_check_done(self, manual, error):
+        if not manual:
+            return
+        if error:
+            QMessageBox.warning(self, u'Verificar atualizações',
+                                u'Não foi possível verificar atualizações.\n\n%s' % error)
+        else:
+            QMessageBox.information(self, u'Verificar atualizações',
+                                    u'Você já está na versão mais recente (%s).' % updater.APP_VERSION)
 
     def show_shortcuts_dialog(self):
         self.show_tutorial_dialog(browser='default', link='https://github.com/tzutalin/labelImg#Hotkeys')
@@ -1559,8 +1605,10 @@ class MainWindow(QMainWindow, WindowMixin):
             classes_file = os.path.join(ann_dir, 'classes.txt')
             if not os.path.isfile(classes_file):
                 return counts
-            with open(classes_file, 'r', encoding=DEFAULT_ENCODING) as f:
-                classes = f.read().strip('\n').split('\n')
+            try:
+                classes = read_classes_file(classes_file)
+            except OSError:
+                return counts
             for fname in os.listdir(ann_dir):
                 if fname == 'classes.txt' or not fname.lower().endswith(TXT_EXT):
                     continue

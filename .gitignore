@@ -46,3 +46,6 @@ tmp.*
 venv/
 .venv/
 .claude/
+
+# Saida do instalador (Inno Setup)
+installer/Output/
