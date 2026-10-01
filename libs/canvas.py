@@ -616,10 +616,12 @@ class Canvas(QWidget):
             h_delta = delta.x()
             v_delta = delta.y()
 
-        mods = ev.modifiers()
-        if int(Qt.ControlModifier) | int(Qt.ShiftModifier) == int(mods) and v_delta:
+        # Wheel alone (or Ctrl+wheel) zooms; Shift+wheel scrolls vertically and
+        # Alt+wheel horizontally (Qt reports Alt+wheel as a horizontal delta).
+        mods = int(ev.modifiers())
+        if int(Qt.ControlModifier) | int(Qt.ShiftModifier) == mods and v_delta:
             self.lightRequest.emit(v_delta)
-        elif Qt.ControlModifier == int(mods) and v_delta:
+        elif mods in (int(Qt.NoModifier), int(Qt.ControlModifier)) and v_delta:
             self.zoomRequest.emit(v_delta)
         else:
             v_delta and self.scrollRequest.emit(v_delta, Qt.Vertical)

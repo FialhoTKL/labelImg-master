@@ -336,6 +336,9 @@ class MainWindow(QMainWindow, WindowMixin):
         fit_width = action(get_str('fitWidth'), self.set_fit_width,
                            'Ctrl+Shift+F', 'fit-width', get_str('fitWidthDetail'),
                            checkable=True, enabled=False)
+        # "S" returns the image to the default view (fit to window).
+        reset_zoom = QShortcut(QKeySequence('S'), self)
+        reset_zoom.activated.connect(self.reset_zoom)
         # Group zoom controls into a list for easier toggling.
         zoom_actions = (self.zoom_widget, zoom_in, zoom_out,
                         zoom_org, fit_window, fit_width)
@@ -1149,6 +1152,12 @@ class MainWindow(QMainWindow, WindowMixin):
             self.actions.fitWidth.setChecked(False)
         self.zoom_mode = self.FIT_WINDOW if value else self.MANUAL_ZOOM
         self.adjust_scale()
+
+    def reset_zoom(self):
+        if self.image.isNull():
+            return
+        self.actions.fitWindow.setChecked(True)
+        self.set_fit_window(True)
 
     def set_fit_width(self, value=True):
         if value:
