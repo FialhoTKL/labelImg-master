@@ -33,7 +33,7 @@ from libs.resources import *
 from libs.constants import *
 from libs.utils import *
 from libs.settings import Settings
-from libs.shape import Shape, DEFAULT_LINE_COLOR, DEFAULT_FILL_COLOR
+from libs.shape import Shape, DEFAULT_LINE_COLOR, DEFAULT_FILL_COLOR, RECTANGLE, POLYGON
 from libs.stringBundle import StringBundle
 from libs.canvas import Canvas
 from libs.zoomWidget import ZoomWidget
@@ -293,6 +293,10 @@ class MainWindow(QMainWindow, WindowMixin):
 
         create = action(get_str('crtBox'), self.create_shape,
                         'w', 'new', get_str('crtBoxDetail'), enabled=False)
+        create_polygon = action(u'Criar polígono', self.create_polygon,
+                                'p', 'new', u'Clique vértice a vértice; Enter, duplo clique ou clique no 1º vértice '
+                                u'fecha; Backspace desfaz. Editando: Ctrl+clique na aresta insere vértice, '
+                                u'Shift+clique no vértice remove (salva em YOLO-seg)', enabled=False)
         delete = action(get_str('delBox'), self.delete_selected_shape,
                         'Delete', 'delete', get_str('delBoxDetail'), enabled=False)
         copy = action(get_str('dupBox'), self.copy_selected_shape,
@@ -403,7 +407,8 @@ class MainWindow(QMainWindow, WindowMixin):
         # Store actions for further handling.
         self.actions = Struct(save=save, save_format=save_format, saveAs=save_as, open=open, close=close, resetAll=reset_all, deleteImg=delete_image,
                               moveLabeled=move_labeled,
-                              lineColor=color1, create=create, delete=delete, edit=edit, copy=copy,
+                              lineColor=color1, create=create, createPolygon=create_polygon,
+                              delete=delete, edit=edit, copy=copy,
                               createMode=create_mode, editMode=edit_mode, advancedMode=advanced_mode,
                               shapeLineColor=shape_line_color, shapeFillColor=shape_fill_color,
                               zoom=zoom, zoomIn=zoom_in, zoomOut=zoom_out, zoomOrg=zoom_org,
@@ -416,17 +421,18 @@ class MainWindow(QMainWindow, WindowMixin):
                               beginner=(), advanced=(),
                               editMenu=(edit, copy, delete,
                                         None, color1, self.draw_squares_option),
-                              beginnerContext=(create, edit, copy, delete),
+                              beginnerContext=(create, create_polygon, edit, copy, delete),
                               advancedContext=(create_mode, edit_mode, edit, copy,
                                                delete, shape_line_color, shape_fill_color),
                               onLoadActive=(
-                                  close, create, create_mode, edit_mode),
+                                  close, create, create_polygon, create_mode, edit_mode),
                               onShapesPresent=(save_as, hide_all, show_all))
 
         self.menus = Struct(
             file=self.menu(get_str('menu_file')),
             edit=self.menu(get_str('menu_edit')),
             view=self.menu(get_str('menu_view')),
+            revisao=self.menu(u'&Revisão automática'),
             help=self.menu(get_str('menu_help')),
             recentFiles=QMenu(get_str('menu_openRecent')),
             labelList=label_menu)
@@ -451,6 +457,10 @@ class MainWindow(QMainWindow, WindowMixin):
         add_actions(self.menus.file,
                     (open, open_dir, change_save_dir, open_annotation, copy_prev_bounding, self.menus.recentFiles, save, save_format, save_as, close, reset_all, delete_image, move_labeled, quit))
         add_actions(self.menus.help, (help_default, show_info, show_shortcut, None, check_update))
+        abrir_revisao = action(u'Abrir projeto de revisão…', self.abrir_revisao, 'Ctrl+Shift+V', 'open',
+                               u'Aprovar/reprovar as detecções automáticas de um projeto do processador')
+        add_actions(self.menus.revisao, (abrir_revisao,))
+        self.janela_revisao = None
         add_actions(self.menus.view, (
             self.auto_saving,
             self.single_class_mode,
@@ -471,7 +481,7 @@ class MainWindow(QMainWindow, WindowMixin):
 
         self.tools = self.toolbar('Tools')
         self.actions.beginner = (
-            open, open_dir, change_save_dir, open_next_image, open_prev_image, verify, save, save_format, move_labeled, None, create, copy, delete, None,
+            open, open_dir, change_save_dir, open_next_image, open_prev_image, verify, save, save_format, move_labeled, None, create, create_polygon, copy, delete, None,
             zoom_in, zoom, zoom_out, fit_window, fit_width, None,
             light_brighten, light, light_darken, light_org)
 
@@ -780,13 +790,37 @@ class MainWindow(QMainWindow, WindowMixin):
             QMessageBox.information(self, u'Verificar atualizações',
                                     u'Você já está na versão mais recente (%s).' % updater.APP_VERSION)
 
+    def abrir_revisao(self, _value=False):
+        from libs.revisao.janela import JanelaRevisao
+        pasta = ustr(QFileDialog.getExistingDirectory(
+            self, u'Pasta do projeto (criada pelo processador)', self.settings.get(SETTING_REVIEW_PROJECT, '')))
+        if not pasta:
+            return
+        try:
+            self.janela_revisao = JanelaRevisao(pasta)
+        except (IOError, OSError, ValueError) as e:
+            QMessageBox.warning(self, u'Revisão automática', u'Não foi possível abrir o projeto:\n%s' % e)
+            return
+        self.settings[SETTING_REVIEW_PROJECT] = pasta
+        self.settings.save()
+        self.janela_revisao.show()
+
     def show_shortcuts_dialog(self):
         self.show_tutorial_dialog(browser='default', link='https://github.com/tzutalin/labelImg#Hotkeys')
 
     def create_shape(self):
         assert self.beginner()
+        self.canvas.create_type = RECTANGLE
         self.canvas.set_editing(False)
         self.actions.create.setEnabled(False)
+
+    def create_polygon(self):
+        self.canvas.create_type = POLYGON
+        if self.beginner():
+            self.canvas.set_editing(False)
+            self.actions.create.setEnabled(False)
+        else:
+            self.toggle_draw_mode(False)
 
     def toggle_drawing_sensitive(self, drawing=True):
         """In the middle of drawing, toggling between modes should be disabled."""
@@ -919,8 +953,10 @@ class MainWindow(QMainWindow, WindowMixin):
 
     def load_labels(self, shapes):
         s = []
-        for label, points, line_color, fill_color, difficult in shapes:
-            shape = Shape(label=label)
+        for item in shapes:
+            # leitores devolvem (label, points, line, fill, difficult[, shape_type])
+            label, points, line_color, fill_color, difficult = item[:5]
+            shape = Shape(label=label, shape_type=item[5] if len(item) > 5 else RECTANGLE)
             for x, y in points:
 
                 # Ensure the labels are within the bounds of the image. If not, fix them.
@@ -969,6 +1005,7 @@ class MainWindow(QMainWindow, WindowMixin):
                         line_color=s.line_color.getRgb(),
                         fill_color=s.fill_color.getRgb(),
                         points=[(p.x(), p.y()) for p in s.points],
+                        shape_type=s.shape_type,
                         # add chris
                         difficult=s.difficult)
 
@@ -1874,7 +1911,6 @@ class MainWindow(QMainWindow, WindowMixin):
         self.set_format(FORMAT_YOLO)
         t_yolo_parse_reader = YoloReader(txt_path, self.image)
         shapes = t_yolo_parse_reader.get_shapes()
-        print(shapes)
         self.load_labels(shapes)
         self.canvas.verified = t_yolo_parse_reader.verified
 

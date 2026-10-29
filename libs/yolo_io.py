@@ -39,6 +39,26 @@ class YOLOWriter:
         bnd_box['difficult'] = difficult
         self.box_list.append(bnd_box)
 
+    def add_polygon(self, points, name, difficult):
+        """Polígono em pixels [(x, y), ...] -> linha YOLO-seg."""
+        x_min, y_min = min(p[0] for p in points), min(p[1] for p in points)
+        x_max, y_max = max(p[0] for p in points), max(p[1] for p in points)
+        self.box_list.append({'xmin': x_min, 'ymin': y_min, 'xmax': x_max, 'ymax': y_max,
+                              'name': name, 'difficult': difficult, 'points': list(points)})
+
+    def has_polygons(self):
+        return any('points' in b for b in self.box_list)
+
+    def polygon_to_yolo_line(self, box, class_list):
+        """YOLO-seg: classe x1 y1 x2 y2 ... normalizados. Caixa vira o polígono dos 4 cantos."""
+        if box['name'] not in class_list:
+            class_list.append(box['name'])
+        pts = box.get('points') or [(box['xmin'], box['ymin']), (box['xmax'], box['ymin']),
+                                    (box['xmax'], box['ymax']), (box['xmin'], box['ymax'])]
+        w, h = float(self.img_size[1]), float(self.img_size[0])
+        coords = ' '.join('%.6f %.6f' % (min(max(x / w, 0.0), 1.0), min(max(y / h, 0.0), 1.0)) for x, y in pts)
+        return '%d %s' % (class_list.index(box['name']), coords)
+
     def bnd_box_to_yolo_line(self, box, class_list=[]):
         x_min = box['xmin']
         x_max = box['xmax']
@@ -77,9 +97,13 @@ class YOLOWriter:
             out_class_file = open(classes_file, 'w', encoding=ENCODE_METHOD)
 
 
+        # Com algum polígono o arquivo inteiro sai em YOLO-seg (o ultralytics não aceita misturar).
+        segment = self.has_polygons()
         for box in self.box_list:
+            if segment:
+                out_file.write(self.polygon_to_yolo_line(box, class_list) + '\n')
+                continue
             class_index, x_center, y_center, w, h = self.bnd_box_to_yolo_line(box, class_list)
-            # print (classIndex, x_center, y_center, w, h)
             out_file.write("%d %.6f %.6f %.6f %.6f\n" % (class_index, x_center, y_center, w, h))
 
         # print (classList)
@@ -147,10 +171,17 @@ class YoloReader:
         return label, x_min, y_min, x_max, y_max
 
     def parse_yolo_format(self):
-        bnd_box_file = open(self.file_path, 'r')
-        for bndBox in bnd_box_file:
-            class_index, x_center, y_center, w, h = bndBox.strip().split(' ')
-            label, x_min, y_min, x_max, y_max = self.yolo_line_to_shape(class_index, x_center, y_center, w, h)
-
-            # Caveat: difficult flag is discarded when saved as yolo format.
-            self.add_shape(label, x_min, y_min, x_max, y_max, False)
+        with open(self.file_path, 'r', encoding=ENCODE_METHOD) as bnd_box_file:
+            for line in bnd_box_file:
+                values = line.split()
+                if len(values) == 5:
+                    class_index, x_center, y_center, w, h = values
+                    label, x_min, y_min, x_max, y_max = self.yolo_line_to_shape(class_index, x_center, y_center, w, h)
+                    # Caveat: difficult flag is discarded when saved as yolo format.
+                    self.add_shape(label, x_min, y_min, x_max, y_max, False)
+                elif len(values) >= 7 and len(values) % 2 == 1:
+                    # YOLO-seg: classe + pares x y normalizados
+                    label = self.classes[int(values[0])]
+                    xy = [float(v) for v in values[1:]]
+                    points = [(xy[i] * self.img_size[1], xy[i + 1] * self.img_size[0]) for i in range(0, len(xy), 2)]
+                    self.shapes.append((label, points, None, None, False, 'polygon'))

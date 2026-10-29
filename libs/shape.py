@@ -12,6 +12,8 @@ except ImportError:
 from libs.utils import distance
 import sys
 
+RECTANGLE, POLYGON = 'rectangle', 'polygon'
+
 DEFAULT_LINE_COLOR = QColor(0, 255, 0, 128)
 DEFAULT_FILL_COLOR = QColor(255, 0, 0, 128)
 DEFAULT_SELECT_LINE_COLOR = QColor(255, 255, 255)
@@ -38,8 +40,10 @@ class Shape(object):
     scale = 1.0
     label_font_size = 8
 
-    def __init__(self, label=None, line_color=None, difficult=False, paint_label=False):
+    def __init__(self, label=None, line_color=None, difficult=False, paint_label=False, shape_type=RECTANGLE):
         self.label = label
+        # rectangle: 4 pontos, vértices presos aos vizinhos; polygon: N pontos livres (YOLO-seg)
+        self.shape_type = shape_type
         self.points = []
         self.fill = False
         self.selected = False
@@ -65,9 +69,10 @@ class Shape(object):
         self._closed = True
 
     def reach_max_points(self):
-        if len(self.points) >= 4:
-            return True
-        return False
+        return self.shape_type == RECTANGLE and len(self.points) >= 4
+
+    def is_polygon(self):
+        return self.shape_type == POLYGON
 
     def add_point(self, point):
         if not self.reach_max_points():
@@ -101,9 +106,12 @@ class Shape(object):
             # may be desirable.
             # self.drawVertex(vertex_path, 0)
 
+            # polígono do SAM tem dezenas de vértices: só mostra as alças quando selecionado/sob o mouse
+            show_vertices = not self.is_polygon() or self.selected or self.fill or not self._closed
             for i, p in enumerate(self.points):
                 line_path.lineTo(p)
-                self.draw_vertex(vertex_path, i)
+                if show_vertices:
+                    self.draw_vertex(vertex_path, i)
             if self.is_closed():
                 line_path.lineTo(self.points[0])
 
@@ -179,6 +187,26 @@ class Shape(object):
     def move_vertex_by(self, i, offset):
         self.points[i] = self.points[i] + offset
 
+    def insert_point(self, i, point):
+        self.points.insert(i, point)
+
+    def remove_point(self, i):
+        self.points.pop(i)
+
+    def nearest_edge(self, point, epsilon):
+        """Índice i da aresta (points[i], points[i+1]) mais próxima de point, ou None."""
+        best, index = epsilon, None
+        n = len(self.points)
+        for i in range(n):
+            a, b = self.points[i], self.points[(i + 1) % n]
+            ab = b - a
+            den = ab.x() ** 2 + ab.y() ** 2
+            t = 0.0 if den == 0 else max(0.0, min(1.0, ((point - a).x() * ab.x() + (point - a).y() * ab.y()) / den))
+            d = distance(point - (a + ab * t))
+            if d <= best:
+                best, index = d, i
+        return index
+
     def highlight_vertex(self, i, action):
         self._highlight_index = i
         self._highlight_mode = action
@@ -187,7 +215,7 @@ class Shape(object):
         self._highlight_index = None
 
     def copy(self):
-        shape = Shape("%s" % self.label)
+        shape = Shape("%s" % self.label, shape_type=self.shape_type)
         shape.points = [p for p in self.points]
         shape.fill = self.fill
         shape.selected = self.selected

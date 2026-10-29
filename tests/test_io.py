@@ -97,5 +97,40 @@ class TestCreateMLRW(unittest.TestCase):
         self.assertEqual(365, y_max, 'ymax is wrong')
 
 
+class TestYoloSegRW(unittest.TestCase):
+
+    def test_polygon_round_trip(self):
+        dir_name = os.path.abspath(os.path.dirname(__file__))
+        sys.path.insert(0, os.path.join(dir_name, '..', 'libs'))
+        from yolo_io import YOLOWriter, YoloReader
+
+        class Img:  # o leitor só usa tamanho e escala de cinza
+            def width(self): return 512
+            def height(self): return 256
+            def isGrayscale(self): return False
+
+        out = os.path.join(dir_name, 'seg_test.txt')
+        writer = YOLOWriter('tests', 'seg_test', (256, 512, 3))
+        writer.add_polygon([(10, 20), (100, 20), (60, 200)], 'poste', 0)
+        writer.add_bnd_box(200, 50, 300, 150, 'placa', 0)   # vira polígono de 4 cantos
+        writer.save(class_list=['poste', 'placa'], target_file=out)
+
+        with open(out) as f:
+            linhas = f.read().split('\n')
+        self.assertEqual(linhas[0], '0 0.019531 0.078125 0.195312 0.078125 0.117188 0.781250')
+        self.assertEqual(len(linhas[1].split()), 9)
+
+        shapes = YoloReader(out, Img()).get_shapes()
+        self.assertEqual(shapes[0][0], 'poste')
+        self.assertEqual(shapes[0][5], 'polygon')
+        for (x, y), (ex, ey) in zip(shapes[0][1], [(10, 20), (100, 20), (60, 200)]):
+            self.assertAlmostEqual(x, ex, places=2)
+            self.assertAlmostEqual(y, ey, places=2)
+        self.assertEqual([tuple(round(v) for v in p) for p in shapes[1][1]],
+                         [(200, 50), (300, 50), (300, 150), (200, 150)])
+        os.remove(out)
+        os.remove(os.path.join(dir_name, 'classes.txt'))
+
+
 if __name__ == '__main__':
     unittest.main()
