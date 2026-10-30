@@ -10,8 +10,9 @@
   Z        desfaz o último tile
   F        ajusta o zoom à janela (roda do mouse = zoom, arrastar o fundo = mover)
 Os vértices podem ser arrastados; Ctrl+clique na aresta insere vértice, Shift+clique remove.
+Cada mudança no tile é salva na hora como rascunho: fechar ou cair antes do Enter não perde nada.
 """
-from PyQt5.QtCore import QPointF, Qt, pyqtSignal
+from PyQt5.QtCore import QPointF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QCursor, QKeySequence, QPixmap
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QShortcut, QVBoxLayout, QWidget
 
@@ -40,6 +41,7 @@ class Checagem(QWidget):
         self.proj = self.lote = self.tile = None
         self.feitos = []          # tiles decididos nesta sessão (para desfazer)
         self.modo = None          # None | 'cinza' | 'caixa' (o que a próxima forma desenhada significa)
+        self.t_rascunho = QTimer(self, singleShot=True, interval=500, timeout=self.salvar_rascunho)
 
         v = QVBoxLayout(self)
         topo = QHBoxLayout()
@@ -66,7 +68,7 @@ class Checagem(QWidget):
         self.canvas = Canvas(parent=self)
         self.canvas.newShape.connect(self._nova_forma)
         self.canvas.drawingPolygon.connect(self._desenhando)
-        self.canvas.shapeMoved.connect(lambda: None)
+        self.canvas.shapeMoved.connect(self._mexeu)
         self.canvas.zoomRequest.connect(self._zoom)
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.canvas)
@@ -94,12 +96,18 @@ class Checagem(QWidget):
         self.mostrar(pend[0])
 
     def mostrar(self, tile):
+        self.salvar_rascunho()
+        self.alterado = False
         self.tile = tile
         pix = QPixmap(tile['caminho'])
         self.canvas.load_pixmap(pix)
         formas = []
         salvo = self.proj.tiles.get(tile['nome'])
-        if salvo and salvo['estado'] == 'aguardando':
+        rasc = self.proj.rascunho(self._chave())
+        if rasc:
+            # o tile foi editado antes de fechar (ou foi desfeito): volta exatamente como estava
+            formas = [self._de_rascunho(d) for d in rasc]
+        elif salvo and salvo['estado'] == 'aguardando':
             # volta do pedido: o que já estava conferido + os polígonos que a GPU devolveu
             for p in salvo['poligonos']:
                 formas.append(self._forma(p['classe'], p['pontos'], p.get('id')))
@@ -136,6 +144,52 @@ class Checagem(QWidget):
         s.pontos_orig = [tuple(p) for p in pontos]
         return s
 
+    # --- rascunho -------------------------------------------------------------
+    def _chave(self, nome=None):
+        return u'tile|%s|%s' % (self.lote.nome, nome or self.tile['nome'])
+
+    def _para_rascunho(self, s):
+        tipo = 'cinza' if s.label == CINZA else 'caixa' if getattr(s, 'pedido', False) else 'poligono'
+        return {'tipo': tipo, 'classe': s.label, 'id': getattr(s, 'inst_id', None),
+                'editado': tipo == 'poligono' and self._editado(s),
+                'pontos': [[round(p.x(), 1), round(p.y(), 1)] for p in s.points]}
+
+    def _de_rascunho(self, d):
+        pts = [QPointF(a, b) for a, b in d['pontos']]
+        if d['tipo'] == 'cinza':
+            return self._cinza(pts)
+        if d['tipo'] == 'caixa':
+            return self._caixa(d['classe'], pts)
+        s = self._forma(d['classe'], d['pontos'], d.get('id'))
+        if d.get('editado'):
+            s.pontos_orig = None
+        return s
+
+    def _caixa(self, classe, pontos):
+        s = Shape(label=classe, shape_type=RECTANGLE)
+        s.points = list(pontos)
+        s.close()
+        s.pedido = True          # vira pedido de máscara ao confirmar o tile
+        s.line_color = QColor(0, 160, 255)
+        s.fill_color = QColor(0, 160, 255, 40)
+        s.paint_label = True
+        return s
+
+    def _mexeu(self):
+        self.alterado = True
+        self.t_rascunho.start()       # arrastar vértice emite a cada movimento: grava 0,5 s depois de parar
+
+    def salvar_rascunho(self):
+        """Grava as formas atuais do tile, se o revisor mexeu nele (tile intocado não gera rascunho)."""
+        self.t_rascunho.stop()
+        if self.tile is None or self.lote is None or not getattr(self, 'alterado', False):
+            return
+        self.proj.gravar_rascunho(self._chave(), [self._para_rascunho(s) for s in self.canvas.shapes])
+
+    def _limpar_rascunho(self):
+        self.t_rascunho.stop()
+        self.proj.gravar_rascunho(self._chave(), None)
+
     # --- decisões ------------------------------------------------------------
     def _cinza(self, pontos):
         g = ShapeCinza(label=CINZA)
@@ -171,7 +225,9 @@ class Checagem(QWidget):
                                     'editado': self._editado(s),
                                     'pontos': [[round(p.x(), 1), round(p.y(), 1)] for p in s.points]} for s in formas]})
         self.proj.registrar(regs)
+        self._limpar_rascunho()
         self.feitos.append(self.tile['nome'])
+        self.tile = None
         self.mudou.emit()
         self.proximo()
 
@@ -191,7 +247,9 @@ class Checagem(QWidget):
                      'poligonos': [{'classe': s.label, 'id': getattr(s, 'inst_id', None), 'editado': self._editado(s),
                                     'pontos': [[round(p.x(), 1), round(p.y(), 1)] for p in s.points]} for s in formas]})
         self.proj.registrar(regs)
+        self._limpar_rascunho()
         self.feitos.append(self.tile['nome'])
+        self.tile = None
         self.mudou.emit()
         self.proximo()
 
@@ -220,16 +278,26 @@ class Checagem(QWidget):
         arquivos = exportador.descartar_tile(self.proj, self.tile)
         self.proj.registrar([{'tipo': 'tile', 'lote': self.lote.nome, 'tile': self.tile['nome'],
                               'estado': 'descartado', 'arquivos': arquivos}])
+        self._limpar_rascunho()
         self.feitos.append(self.tile['nome'])
+        self.tile = None
         self.mudou.emit()
         self.proximo()
 
     def desfazer(self):
         if not self.feitos:
             return
+        self.salvar_rascunho()
         nome = self.feitos.pop()
         r = self.proj.tiles.get(nome, {})
         exportador.remover(r.get('arquivos'))
+        if r.get('estado') in ('completo', 'aguardando'):
+            # reabre o tile com as edições que tinham sido gravadas, não com o original da grade
+            formas = [{'tipo': 'poligono', 'classe': p['classe'], 'id': p.get('id'), 'editado': p.get('editado'),
+                       'pontos': p['pontos']} for p in r.get('poligonos', [])]
+            formas += [{'tipo': 'cinza', 'classe': CINZA, 'pontos': [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]}
+                       for x0, y0, x1, y1 in r.get('cinza', [])]
+            self.proj.gravar_rascunho(self._chave(nome), formas)
         regs = [{'tipo': 'desfazer_tile', 'tile': nome, 'lote': self.lote.nome}]
         # instâncias apagadas nesta checagem voltam a ser aprovadas (com a classe da grade)
         for i in r.get('apagadas', []):
@@ -268,6 +336,8 @@ class Checagem(QWidget):
         if self.canvas.selected_shape is not None:
             self.canvas.delete_selected()
             self.canvas.update()
+            self.alterado = True
+            self.salvar_rascunho()
 
     def _desenhando(self, ativo):
         if not ativo:
@@ -285,18 +355,15 @@ class Checagem(QWidget):
                 a.setData(cl)
             a = m.exec_(QCursor.pos())
             if a is not None and self.modo == 'caixa':
-                s.label = a.data()
-                s.pedido = True          # vira pedido de máscara ao confirmar o tile
-                s.line_color = QColor(0, 160, 255)
-                s.fill_color = QColor(0, 160, 255, 40)
-                s.paint_label = True
-                c.shapes.append(s)
+                c.shapes.append(self._caixa(a.data(), s.points))
             elif a is not None:
                 c.shapes.append(self._forma(a.data(), [(p.x(), p.y()) for p in s.points]))
                 c.shapes[-1].pontos_orig = None
         self.modo = None
         c.set_editing(True)
         c.update()
+        self.alterado = True
+        self.salvar_rascunho()
 
     # --- zoom ---------------------------------------------------------------
     def ajustar(self):

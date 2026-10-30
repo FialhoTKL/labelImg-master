@@ -10,6 +10,9 @@ decisoes.jsonl é append-only e é o checkpoint: cada ação vira uma linha grav
                        aguardando = o revisor pediu à GPU a máscara de caixas desenhadas (pedidos)
   desfazer_tile        {tile}
   lote                 {lote, estado: concluido}
+
+Entre uma confirmação e outra, o que o revisor já marcou (página da grade, polígonos do tile)
+fica em revisao/rascunho.json, gravado a cada mudança: fechar ou cair no meio não perde nada.
 """
 import getpass
 import hashlib
@@ -197,6 +200,28 @@ class ProjetoRevisao(object):
             f.write('\n'.join(linhas) + '\n')
             f.flush()
             os.fsync(f.fileno())
+
+    # --- rascunho (marcações ainda não confirmadas) ---------------------------
+    def _rascunhos(self):
+        if not hasattr(self, '_rasc'):
+            self._rasc = _ler_json(self.p('revisao', 'rascunho.json'), {}) or {}
+        return self._rasc
+
+    def rascunho(self, chave):
+        return self._rascunhos().get(chave)
+
+    def gravar_rascunho(self, chave, dados):
+        r = self._rascunhos()
+        if dados:
+            r[chave] = dados
+        elif chave in r:
+            del r[chave]
+        else:
+            return
+        arq = self.p('revisao', 'rascunho.json')
+        with open(arq + '.tmp', 'w', encoding='utf-8') as f:
+            json.dump(r, f, ensure_ascii=False)
+        os.replace(arq + '.tmp', arq)
 
     # --- lotes ---------------------------------------------------------------
     # Projetos grandes têm milhares de lotes numa pasta de rede: cada consulta ao disco custa caro.

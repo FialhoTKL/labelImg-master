@@ -156,3 +156,9 @@ class JanelaRevisao(QMainWindow):
 
     def _etapa_concluida(self):
         self._seguir()
+
+    def closeEvent(self, ev):
+        # grava o que ainda estava esperando a folga do rascunho
+        self.grade.salvar_rascunho()
+        self.checagem.salvar_rascunho()
+        super(JanelaRevisao, self).closeEvent(ev)
