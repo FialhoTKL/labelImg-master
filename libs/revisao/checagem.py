@@ -8,12 +8,13 @@
   Delete   apaga o polígono selecionado (a instância vira reprovada)
   X        descarta o tile inteiro
   Z        desfaz o último tile
+  Ctrl+Z   desfaz a última edição de polígono neste tile (um passo por vez)
   F        ajusta o zoom à janela (roda do mouse = zoom no ponto do mouse, arrastar o fundo = mover)
 Vértices: clique apaga, arrastar move. Botão direito com um polígono selecionado insere um vértice no
 ponto; sem nada selecionado começa um polígono novo ali (a classe é escolhida ao fechar). Esc tira a seleção.
 Cada mudança no tile é salva na hora como rascunho: fechar ou cair antes do Enter não perde nada.
 """
-from PyQt5.QtCore import QPointF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QPointF, Qt, QTimer, pyqtSignal
 from collections import Counter
 
 from PyQt5.QtGui import QColor, QCursor, QIcon, QKeySequence, QPixmap
@@ -46,6 +47,10 @@ class Checagem(QWidget):
         self.feitos = []          # tiles decididos nesta sessão (para desfazer)
         self.modo = None          # None | 'cinza' | 'caixa' (o que a próxima forma desenhada significa)
         self.t_rascunho = QTimer(self, singleShot=True, interval=500, timeout=self.salvar_rascunho)
+        # Ctrl+Z: pilha de estados do tile; um arrasto inteiro (do clique ao soltar) é um passo só
+        self.historico = []
+        self._base = []
+        self._grupo = False
 
         v = QVBoxLayout(self)
         topo = QHBoxLayout()
@@ -64,7 +69,8 @@ class Checagem(QWidget):
         v.addLayout(topo)
         ajuda = QLabel(u'<b>Enter</b> completo · <b>P</b> polígono do que faltou · <b>B</b> caixa → SAM · '
                        u'<b>G</b> cobrir de cinza · '
-                       u'<b>Delete</b> apaga o selecionado · <b>X</b> descarta o tile · <b>Z</b> desfaz · '
+                       u'<b>Delete</b> apaga o selecionado · <b>X</b> descarta o tile · <b>Z</b> desfaz o tile · '
+                       u'<b>Ctrl+Z</b> desfaz a edição · '
                        u'<b>F</b> ajusta o zoom<br>Vértice: <b>clique</b> apaga, arrastar move · '
                        u'<b>botão direito</b>: com polígono selecionado insere vértice, sem seleção começa '
                        u'polígono novo · <b>Esc</b> tira a seleção')
@@ -78,6 +84,7 @@ class Checagem(QWidget):
         self.canvas.drawingPolygon.connect(self._desenhando)
         self.canvas.shapeMoved.connect(self._mexeu)
         self.canvas.zoomRequest.connect(self._zoom)
+        self.canvas.installEventFilter(self)
         self.scroll = QScrollArea()
         self.scroll.setWidget(self.canvas)
         self.scroll.setWidgetResizable(True)
@@ -104,6 +111,7 @@ class Checagem(QWidget):
                    (Qt.Key_Z, self.desfazer), (Qt.Key_F, self.ajustar))
         for tecla, fn in atalhos:
             QShortcut(QKeySequence(tecla), self, fn, context=Qt.WidgetWithChildrenShortcut)
+        QShortcut(QKeySequence('Ctrl+Z'), self, self.desfazer_edicao, context=Qt.WidgetWithChildrenShortcut)
 
     # --- fila de tiles -------------------------------------------------------
     def abrir(self, proj, lote):
@@ -148,6 +156,9 @@ class Checagem(QWidget):
                 formas.append(self._forma(classe, x['poligono'], x['id']))
         self.canvas.load_shapes(formas)
         self.canvas.set_editing(True)
+        self.historico = []
+        self._base = self._estado()
+        self._grupo = False
         prog = self.lote.progresso()['tiles']
         self.lb_titulo.setText(u'%s  ·  tile %d de %d  ·  %s  ·  %d objetos' % (
             self.lote.nome, prog[0] + 1, prog[1], tile['nome'], len(formas)))
@@ -200,6 +211,7 @@ class Checagem(QWidget):
         return s
 
     def _mexeu(self):
+        self._marcar()
         self.alterado = True
         self.t_rascunho.start()       # arrastar vértice emite a cada movimento: grava 0,5 s depois de parar
 
@@ -358,9 +370,11 @@ class Checagem(QWidget):
 
     def apagar(self):
         if self.canvas.selected_shape is not None:
+            self._marcar()
             self.canvas.delete_selected()
             self.canvas.update()
             self._atualizar_lista()
+            self._assentar()
             self.alterado = True
             self.salvar_rascunho()
 
@@ -373,6 +387,7 @@ class Checagem(QWidget):
         c = self.canvas
         s = c.shapes.pop()
         if self.modo == 'cinza':
+            self._marcar()
             c.shapes.append(self._cinza(s.points))
         else:
             m = QMenu(self)
@@ -380,6 +395,8 @@ class Checagem(QWidget):
                 a = m.addAction(u'&%d  %s' % (i + 1, cl))
                 a.setData(cl)
             a = m.exec_(QCursor.pos())
+            if a is not None:
+                self._marcar()
             if a is not None and self.modo == 'caixa':
                 c.shapes.append(self._caixa(a.data(), s.points))
             elif a is not None:
@@ -387,6 +404,49 @@ class Checagem(QWidget):
                 c.shapes[-1].pontos_orig = None
         self.modo = None
         c.set_editing(True)
+        c.update()
+        self._atualizar_lista()
+        self._assentar()
+        self.alterado = True
+        self.salvar_rascunho()
+
+    # --- desfazer edição (Ctrl+Z) --------------------------------------------
+    def _estado(self):
+        return [self._para_rascunho(s) for s in self.canvas.shapes]
+
+    def _marcar(self):
+        """Uma edição começou: guarda o estado de antes (só uma vez por gesto)."""
+        if not self._grupo:
+            self.historico.append(self._base)
+            del self.historico[:-100]
+            self._grupo = True
+
+    def _assentar(self):
+        """O gesto terminou (soltou o mouse/tecla): o estado atual vira a base do próximo passo."""
+        if self._grupo and self.tile is not None:
+            self._base = self._estado()
+            self._grupo = False
+
+    def eventFilter(self, obj, ev):
+        if obj is self.canvas and ev.type() in (QEvent.MouseButtonRelease, QEvent.KeyRelease):
+            QTimer.singleShot(0, self._assentar)      # depois que o canvas tratar o soltar
+        return False
+
+    def desfazer_edicao(self):
+        c = self.canvas
+        if c.current is not None:          # desenhando: tira o último vértice
+            if c.current.is_polygon() and len(c.current) > 1:
+                c.current.pop_point()
+                c.line.points = [c.current[-1], c.line[1]]
+                c.update()
+            return
+        self._assentar()
+        if self.tile is None or not self.historico:
+            return
+        self._base = self.historico.pop()
+        c.load_shapes([self._de_rascunho(d) for d in self._base])
+        c.selected_shape = None
+        c.un_highlight()
         c.update()
         self._atualizar_lista()
         self.alterado = True
