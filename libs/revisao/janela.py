@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Janela do modo revisão: lista de lotes + grade (etapa 1) + checagem do tile (etapa 2)."""
-import json
 import os
+from collections import Counter
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor
@@ -64,28 +64,38 @@ class JanelaRevisao(QMainWindow):
         QTimer.singleShot(0, self.abrir_proximo)
 
     # --- lotes ------------------------------------------------------------------
-    def _resumo_lote(self, l):
+    def _resumo_lote(self, l, feitas_por_lote, tiles_por_lote):
         """(etapa, progresso) sem carregar o lote inteiro: lote.json + decisões."""
         if not l['fechado']:
             return u'Processando', u'', '#999'
         if l['estado'] == 'concluido':
             return u'Concluído', u'', '#2a7'
-        info = json.load(open(self.proj.p('processado', l['nome'], 'lote.json'), encoding='utf-8'))
-        total = sum(v['total'] for v in info['resumo'].values())
-        feitas = sum(1 for d in self.proj.dec.values() if d.get('lote') == l['nome'])
+        info = self.proj.info_lote(l['nome'])
+        total = sum(v['total'] for v in info.get('resumo', {}).values())
+        feitas = feitas_por_lote.get(l['nome'], 0)
         if feitas < total:
             return u'1 · Grade', u'%d / %d instâncias' % (feitas, total), '#27c' if feitas else '#000'
-        tiles = sum(1 for r in self.proj.tiles.values() if r.get('lote') == l['nome'])
-        return u'2 · Checagem', u'%d tiles conferidos' % tiles, '#c80'
+        return u'2 · Checagem', u'%d tiles conferidos' % tiles_por_lote.get(l['nome'], 0), '#c80'
 
     def atualizar(self):
         # lote parado esperando a GPU: retoma sozinho quando as respostas chegam
         if self.lote is not None and self.pilha.currentWidget() is self.inicio and self.lote.etapa() != 'aguardando':
             self._seguir()
-        lotes = self.proj.lotes()
-        self.tb.setRowCount(len(lotes))
+        todos = self.proj.lotes()
+        # a tabela mostra os lotes prontos e os próximos em processamento; o resto vira uma linha de resumo
+        abertos = [l for l in todos if not l['fechado']]
+        lotes = [l for l in todos if l['fechado']] + abertos[:3]
+        resto = len(abertos) - min(len(abertos), 3)
+        feitas_por_lote = Counter(d.get('lote') for d in self.proj.dec.values())
+        tiles_por_lote = Counter(r.get('lote') for r in self.proj.tiles.values())
+        self.tb.setRowCount(len(lotes) + (1 if resto else 0))
+        if resto:
+            for j, txt in enumerate((u'+ %d lotes' % resto, u'Aguardando', u'processamento')):
+                it = QTableWidgetItem(txt)
+                it.setForeground(QColor('#999'))
+                self.tb.setItem(len(lotes), j, it)
         for i, l in enumerate(lotes):
-            etapa, prog, cor = self._resumo_lote(l)
+            etapa, prog, cor = self._resumo_lote(l, feitas_por_lote, tiles_por_lote)
             for j, txt in enumerate((l['nome'], etapa, prog)):
                 it = QTableWidgetItem(txt)
                 it.setForeground(QColor(cor))

@@ -199,14 +199,42 @@ class ProjetoRevisao(object):
             os.fsync(f.fileno())
 
     # --- lotes ---------------------------------------------------------------
+    # Projetos grandes têm milhares de lotes numa pasta de rede: cada consulta ao disco custa caro.
+    # Um lote fechado (lote.json gravado) não muda mais, então fica em cache; e como o processador
+    # fecha os lotes em ordem, a busca para depois de alguns lotes seguidos ainda abertos.
+    ABERTOS_A_CONFERIR = 10
+
+    def _indice(self):
+        arq = self.p('processado', 'indice.json')
+        st = os.stat(arq)
+        chave = (st.st_mtime, st.st_size)
+        if getattr(self, '_idx', None) is None or self._idx[0] != chave:
+            self._idx = (chave, _ler_json(arq, {'lotes': []})['lotes'])
+        return self._idx[1]
+
     def lotes(self):
-        idx = _ler_json(self.p('processado', 'indice.json'), {'lotes': []})
+        if not hasattr(self, '_fechados'):
+            self._fechados = set()
         out = []
-        for l in idx['lotes']:
-            fechado = os.path.exists(self.p('processado', l['nome'], 'lote.json'))
-            out.append({'nome': l['nome'], 'n_panoramas': len(l['panoramas']), 'fechado': fechado,
-                        'estado': self.estado_lote.get(l['nome'])})
+        abertos = 0
+        for l in self._indice():
+            nome = l['nome']
+            if nome not in self._fechados and abertos < self.ABERTOS_A_CONFERIR:
+                if os.path.exists(self.p('processado', nome, 'lote.json')):
+                    self._fechados.add(nome)
+                else:
+                    abertos += 1
+            out.append({'nome': nome, 'n_panoramas': len(l['panoramas']), 'fechado': nome in self._fechados,
+                        'estado': self.estado_lote.get(nome)})
         return out
+
+    def info_lote(self, nome):
+        """lote.json (imutável depois de gravado), em cache."""
+        if not hasattr(self, '_info'):
+            self._info = {}
+        if nome not in self._info:
+            self._info[nome] = _ler_json(self.p('processado', nome, 'lote.json'), {})
+        return self._info[nome]
 
     def lote(self, nome):
         return Lote(self, nome)
