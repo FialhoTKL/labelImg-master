@@ -67,6 +67,10 @@ class Canvas(QWidget):
         self.draw_square = False
         # tipo da próxima forma criada: retângulo (arrasta) ou polígono (clica vértice a vértice)
         self.create_type = RECTANGLE
+        # modo revisão: clique num vértice apaga, botão direito insere vértice ou começa polígono novo
+        self.edicao_rapida = False
+        self._clique_vertice = None
+        self.pos_roda = None      # posição do mouse na última roda (zoom centrado no mouse)
 
         # initialisation for panning
         self.pan_initial_pos = QPoint()
@@ -174,6 +178,8 @@ class Canvas(QWidget):
             return
 
         # Polygon copy moving.
+        if Qt.RightButton & ev.buttons() and self.edicao_rapida:
+            return
         if Qt.RightButton & ev.buttons():
             if self.selected_shape_copy and self.prev_point:
                 self.override_cursor(CURSOR_MOVE)
@@ -187,6 +193,10 @@ class Canvas(QWidget):
         # Polygon/Vertex moving.
         if Qt.LeftButton & ev.buttons():
             if self.selected_vertex():
+                if self._clique_vertice is not None:
+                    if (ev.pos() - self._clique_vertice).manhattanLength() < 5:
+                        return      # tremida do clique: ainda não é arrasto
+                    self._clique_vertice = None
                 self.bounded_move_vertex(pos)
                 self.shapeMoved.emit()
                 self.repaint()
@@ -218,7 +228,7 @@ class Canvas(QWidget):
         for shape in reversed([s for s in priority_list if self.isVisible(s)]):
             # Look for a nearby vertex to highlight. If that fails,
             # check if we happen to be inside a shape.
-            index = shape.nearest_vertex(pos, self.epsilon)
+            index = shape.nearest_vertex(pos, self._raio())
             if index is not None:
                 if self.selected_vertex():
                     self.h_shape.highlight_clear()
@@ -258,6 +268,8 @@ class Canvas(QWidget):
             elif self.edit_polygon_vertex(pos, ev.modifiers()):
                 pass
             else:
+                if self.edicao_rapida and self.selected_vertex() and self.h_shape.is_polygon():
+                    self._clique_vertice = ev.pos()     # soltar sem arrastar apaga o vértice
                 selection = self.select_shape_point(pos)
                 self.prev_point = pos
 
@@ -266,12 +278,18 @@ class Canvas(QWidget):
                     QApplication.setOverrideCursor(QCursor(Qt.OpenHandCursor))
                     self.pan_initial_pos = ev.pos()
 
+        elif ev.button() == Qt.RightButton and self.edicao_rapida:
+            self.clique_direito(pos)
         elif ev.button() == Qt.RightButton and self.editing():
             self.select_shape_point(pos)
             self.prev_point = pos
         self.update()
 
     def mouseReleaseEvent(self, ev):
+        if ev.button() == Qt.RightButton and self.edicao_rapida:
+            return
+        if ev.button() == Qt.LeftButton and self._clique_vertice is not None:
+            self.apagar_vertice()
         if ev.button() == Qt.RightButton:
             menu = self.menus[bool(self.selected_shape_copy)]
             self.restore_cursor()
@@ -340,6 +358,43 @@ class Canvas(QWidget):
                     return True
         return False
 
+    def _raio(self):
+        # no modo revisão o alcance do vértice é fixo na tela (10 px), qualquer que seja o zoom
+        return 10.0 / self.scale if self.edicao_rapida else self.epsilon
+
+    def apagar_vertice(self):
+        shape, i = self.h_shape, self.h_vertex
+        self._clique_vertice = None
+        if shape is None or i is None or not shape.is_polygon() or len(shape) <= 3:
+            return
+        shape.remove_point(i)
+        self.un_highlight()
+        self.shapeMoved.emit()
+        self.update()
+
+    def clique_direito(self, pos):
+        """Modo revisão. Com polígono selecionado: insere um vértice no ponto, na aresta mais próxima.
+        Sem seleção: começa um polígono novo ali (a classe é escolhida ao fechar). Desenhando: mais um vértice."""
+        if self.drawing():
+            if self.create_type == POLYGON:
+                self.handle_polygon_drawing(pos)
+            return
+        if self.out_of_pixmap(pos):
+            size = self.pixmap.size()
+            pos = QPointF(min(max(0, pos.x()), size.width()), min(max(0, pos.y()), size.height()))
+        shape = self.selected_shape
+        if shape is not None and shape.is_polygon():
+            i = shape.nearest_edge(pos, float('inf')) + 1
+            shape.insert_point(i, pos)
+            self.h_shape, self.h_vertex = shape, i
+            shape.highlight_vertex(i, shape.MOVE_VERTEX)
+            self.shapeMoved.emit()
+            self.update()
+            return
+        self.create_type = POLYGON
+        self.set_editing(False)
+        self.handle_polygon_drawing(pos)
+
     def handle_drawing(self, pos):
         if self.create_type == POLYGON:
             self.handle_polygon_drawing(pos)
@@ -387,6 +442,9 @@ class Canvas(QWidget):
         return self.drawing() and self.current and len(self.current) > 2
 
     def mouseDoubleClickEvent(self, ev):
+        if self.edicao_rapida and (ev.button() == Qt.RightButton or not self.drawing()):
+            self.mousePressEvent(ev)      # cliques rápidos seguidos contam como cliques
+            return
         # We need at least 4 points here, since the mousePress handler
         # adds an extra one before this handler is called.
         if self.can_close_shape() and self.current.is_polygon():
@@ -663,6 +721,7 @@ class Canvas(QWidget):
             h_delta = delta.x()
             v_delta = delta.y()
 
+        self.pos_roda = ev.posF() if hasattr(ev, 'posF') else QPointF(ev.pos())
         # Wheel alone (or Ctrl+wheel) zooms; Shift+wheel scrolls vertically and
         # Alt+wheel horizontally (Qt reports Alt+wheel as a horizontal delta).
         mods = int(ev.modifiers())
@@ -681,6 +740,9 @@ class Canvas(QWidget):
             print('ESC press')
             self.current = None
             self.drawingPolygon.emit(False)
+            self.update()
+        elif key == Qt.Key_Escape and self.edicao_rapida and self.selected_shape:
+            self.de_select_shape()
             self.update()
         elif key == Qt.Key_Return and self.can_close_shape():
             self.finalise()

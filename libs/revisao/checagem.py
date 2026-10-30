@@ -8,13 +8,17 @@
   Delete   apaga o polígono selecionado (a instância vira reprovada)
   X        descarta o tile inteiro
   Z        desfaz o último tile
-  F        ajusta o zoom à janela (roda do mouse = zoom, arrastar o fundo = mover)
-Os vértices podem ser arrastados; Ctrl+clique na aresta insere vértice, Shift+clique remove.
+  F        ajusta o zoom à janela (roda do mouse = zoom no ponto do mouse, arrastar o fundo = mover)
+Vértices: clique apaga, arrastar move. Botão direito com um polígono selecionado insere um vértice no
+ponto; sem nada selecionado começa um polígono novo ali (a classe é escolhida ao fechar). Esc tira a seleção.
 Cada mudança no tile é salva na hora como rascunho: fechar ou cair antes do Enter não perde nada.
 """
 from PyQt5.QtCore import QPointF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QCursor, QKeySequence, QPixmap
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea, QShortcut, QVBoxLayout, QWidget
+from collections import Counter
+
+from PyQt5.QtGui import QColor, QCursor, QIcon, QKeySequence, QPixmap
+from PyQt5.QtWidgets import (QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu, QPushButton, QScrollArea,
+                             QShortcut, QVBoxLayout, QWidget)
 
 from libs.canvas import Canvas
 from libs.revisao import exportador
@@ -45,7 +49,7 @@ class Checagem(QWidget):
 
         v = QVBoxLayout(self)
         topo = QHBoxLayout()
-        self.lb_titulo = QLabel()
+        self.lb_titulo = QLabel(wordWrap=True)
         f = self.lb_titulo.font()
         f.setPointSize(13)
         f.setBold(True)
@@ -61,11 +65,15 @@ class Checagem(QWidget):
         ajuda = QLabel(u'<b>Enter</b> completo · <b>P</b> polígono do que faltou · <b>B</b> caixa → SAM · '
                        u'<b>G</b> cobrir de cinza · '
                        u'<b>Delete</b> apaga o selecionado · <b>X</b> descarta o tile · <b>Z</b> desfaz · '
-                       u'<b>F</b> ajusta o zoom · Ctrl+clique na aresta insere vértice, Shift+clique remove')
+                       u'<b>F</b> ajusta o zoom<br>Vértice: <b>clique</b> apaga, arrastar move · '
+                       u'<b>botão direito</b>: com polígono selecionado insere vértice, sem seleção começa '
+                       u'polígono novo · <b>Esc</b> tira a seleção')
         ajuda.setStyleSheet('color: #555')
+        ajuda.setWordWrap(True)      # sem quebra a linha longa alarga a janela além da tela
         v.addWidget(ajuda)
 
         self.canvas = Canvas(parent=self)
+        self.canvas.edicao_rapida = True
         self.canvas.newShape.connect(self._nova_forma)
         self.canvas.drawingPolygon.connect(self._desenhando)
         self.canvas.shapeMoved.connect(self._mexeu)
@@ -74,7 +82,22 @@ class Checagem(QWidget):
         self.scroll.setWidget(self.canvas)
         self.scroll.setWidgetResizable(True)
         self.canvas.scrollRequest.connect(self._rolar)
-        v.addWidget(self.scroll, 1)
+        meio = QHBoxLayout()
+        meio.addWidget(self.scroll, 1)
+        # o que o tile tem, por classe: o revisor sabe o que procurar; clicar seleciona o próximo da classe
+        lado = QVBoxLayout()
+        lado.addWidget(QLabel(u'<b>Neste tile</b>'))
+        self.lista = QListWidget()
+        self.lista.setFixedWidth(220)
+        self.lista.setFocusPolicy(Qt.NoFocus)        # as teclas continuam indo para o tile
+        self.lista.itemClicked.connect(self._ir_para_classe)
+        lado.addWidget(self.lista, 1)
+        dica = QLabel(u'Clique numa classe para ver cada objeto dela.', wordWrap=True)
+        dica.setStyleSheet('color: #555')
+        dica.setFixedWidth(220)
+        lado.addWidget(dica)
+        meio.addLayout(lado)
+        v.addLayout(meio, 1)
 
         atalhos = ((Qt.Key_Return, self._enter), (Qt.Key_Enter, self._enter), (Qt.Key_P, self.novo_poligono),
                    (Qt.Key_G, self.cobrir_cinza), (Qt.Key_B, self.caixa_sam), (Qt.Key_Delete, self.apagar), (Qt.Key_X, self.descartar),
@@ -128,6 +151,7 @@ class Checagem(QWidget):
         prog = self.lote.progresso()['tiles']
         self.lb_titulo.setText(u'%s  ·  tile %d de %d  ·  %s  ·  %d objetos' % (
             self.lote.nome, prog[0] + 1, prog[1], tile['nome'], len(formas)))
+        self._atualizar_lista()
         self.ajustar()
         self.canvas.setFocus()
 
@@ -336,11 +360,13 @@ class Checagem(QWidget):
         if self.canvas.selected_shape is not None:
             self.canvas.delete_selected()
             self.canvas.update()
+            self._atualizar_lista()
             self.alterado = True
             self.salvar_rascunho()
 
     def _desenhando(self, ativo):
         if not ativo:
+            self.modo = None          # desenho cancelado (Esc): o próximo polígono não herda cinza/caixa
             self.canvas.set_editing(True)
 
     def _nova_forma(self):
@@ -362,8 +388,50 @@ class Checagem(QWidget):
         self.modo = None
         c.set_editing(True)
         c.update()
+        self._atualizar_lista()
         self.alterado = True
         self.salvar_rascunho()
+
+    # --- lista de classes do tile -------------------------------------------
+    def _atualizar_lista(self):
+        formas = self._formas()
+        n = Counter(s.label for s in formas)
+        self.lista.clear()
+        for classe in sorted(n, key=lambda k: (-n[k], k)):
+            pm = QPixmap(14, 14)
+            pm.fill(cor_classe(self.lote.classes, classe))
+            it = QListWidgetItem(QIcon(pm), u'%s   %d' % (classe, n[classe]))
+            it.setData(Qt.UserRole, classe)
+            self.lista.addItem(it)
+        extras = [(u'caixas → SAM', sum(1 for s in self.canvas.shapes if getattr(s, 'pedido', False))),
+                  (u'regiões cinza', sum(1 for s in self.canvas.shapes if s.label == CINZA))]
+        for txt, k in extras:
+            if k:
+                it = QListWidgetItem(u'%s   %d' % (txt, k))
+                it.setForeground(QColor(110, 110, 110))
+                self.lista.addItem(it)
+        if not formas:
+            self.lista.addItem(QListWidgetItem(u'nenhum objeto aprovado'))
+        self.lb_titulo.setText(self.lb_titulo.text().rsplit(u'  ·  ', 1)[0] + u'  ·  %d objetos' % len(formas))
+
+    def _ir_para_classe(self, it):
+        """Seleciona o próximo objeto da classe (circular) e rola a vista até ele."""
+        classe = it.data(Qt.UserRole)
+        if not classe:
+            return
+        c = self.canvas
+        formas = [s for s in self._formas() if s.label == classe]
+        if not formas:
+            return
+        atual = formas.index(c.selected_shape) if c.selected_shape in formas else -1
+        s = formas[(atual + 1) % len(formas)]
+        c.select_shape(s)
+        r = s.bounding_rect()
+        off = c.offset_to_center()
+        meio = (r.center() + off) * c.scale
+        self.scroll.ensureVisible(int(meio.x()), int(meio.y()),
+                                  int(r.width() * c.scale / 2) + 40, int(r.height() * c.scale / 2) + 40)
+        c.setFocus()
 
     # --- zoom ---------------------------------------------------------------
     def ajustar(self):
@@ -376,10 +444,23 @@ class Checagem(QWidget):
         self.canvas.update()
 
     def _zoom(self, delta):
-        self.canvas.scale *= 1.15 ** (delta / 120.0)
-        self.canvas.scale = min(max(self.canvas.scale, 0.05), 8.0)
-        self.canvas.adjustSize()
-        self.canvas.update()
+        """Zoom mantendo parado o pixel da imagem que está sob o mouse."""
+        c = self.canvas
+        tela = c.pos_roda
+        if tela is None:      # sem roda ainda: centro da área visível
+            vp = self.scroll.viewport()
+            tela = QPointF(c.mapFrom(vp, vp.rect().center()))
+        na_vista = tela + QPointF(c.pos())          # ponto do mouse na área visível
+        ponto = tela / c.scale - c.offset_to_center()
+        c.scale = min(max(c.scale * 1.15 ** (delta / 120.0), 0.05), 8.0)
+        # já no tamanho final (a área de rolagem estica o canvas até a vista): o centramento sai certo
+        vp = self.scroll.viewport()
+        c.resize(max(vp.width(), int(c.pixmap.width() * c.scale)), max(vp.height(), int(c.pixmap.height() * c.scale)))
+        novo = (ponto + c.offset_to_center()) * c.scale
+        self.scroll.horizontalScrollBar().setValue(int(round(novo.x() - na_vista.x())))
+        self.scroll.verticalScrollBar().setValue(int(round(novo.y() - na_vista.y())))
+        c.pos_roda = None
+        c.update()
 
     def _rolar(self, delta, orientacao):
         bar = self.scroll.verticalScrollBar() if orientacao == Qt.Vertical else self.scroll.horizontalScrollBar()
