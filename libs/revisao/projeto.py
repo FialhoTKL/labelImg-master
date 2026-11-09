@@ -237,9 +237,31 @@ class ProjetoRevisao(object):
             self._idx = (chave, _ler_json(arq, {'lotes': []})['lotes'])
         return self._idx[1]
 
+    def _resetado(self):
+        """O processador devolveu lotes não revisados à fila (processado/resetado.json): esquece o cache."""
+        arq = self.p('processado', 'resetado.json')
+        chave = os.path.getmtime(arq) if os.path.exists(arq) else None
+        if not hasattr(self, '_fechados') or self._chave_reset != chave:
+            self._chave_reset = chave
+            self._fechados, self._info = set(), {}
+
+    def lote_existe(self, nome):
+        """lote.json ainda está lá (o processador pode ter devolvido o lote à fila para refazer)."""
+        if os.path.exists(self.p('processado', nome, 'lote.json')):
+            return True
+        getattr(self, '_fechados', set()).discard(nome)
+        getattr(self, '_info', {}).pop(nome, None)
+        return False
+
+    def marcar_aberto(self, nome):
+        """Avisa o processador qual lote está aberto aqui: ele não é refeito mesmo sem decisões."""
+        arq = self.p('revisao', 'lote_aberto.json')
+        with open(arq + '.tmp', 'w', encoding='utf-8') as f:
+            json.dump({'lote': nome, 'revisor': self.revisor, 't': time.time()}, f, ensure_ascii=False)
+        os.replace(arq + '.tmp', arq)
+
     def lotes(self):
-        if not hasattr(self, '_fechados'):
-            self._fechados = set()
+        self._resetado()
         out = []
         abertos = 0
         for l in self._indice():

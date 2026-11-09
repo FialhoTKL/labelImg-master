@@ -117,7 +117,7 @@ class JanelaRevisao(QMainWindow):
 
     def abrir_proximo(self):
         for l in self.proj.lotes():
-            if l['fechado'] and l['estado'] != 'concluido':
+            if l['fechado'] and l['estado'] != 'concluido' and self.proj.lote_existe(l['nome']):
                 self.abrir_lote(l['nome'])
                 return
         self.pilha.setCurrentWidget(self.inicio)
@@ -125,9 +125,11 @@ class JanelaRevisao(QMainWindow):
 
     def abrir_lote(self, nome):
         l = next((x for x in self.proj.lotes() if x['nome'] == nome), None)
-        if l is None or not l['fechado']:
+        if l is None or not l['fechado'] or not self.proj.lote_existe(nome):
             QMessageBox.information(self, u'Lote', u'Esse lote ainda está sendo processado.')
+            self.atualizar()
             return
+        self.proj.marcar_aberto(nome)
         self.lote = self.proj.lote(nome)
         self.statusBar().showMessage(u'%s: %d tiles, %d instâncias' % (nome, len(self.lote.tiles), len(self.lote.inst)))
         self._seguir()
@@ -148,6 +150,12 @@ class JanelaRevisao(QMainWindow):
                                 u'Eles voltam para conferência quando o processador responder '
                                 u'(o processador precisa estar rodando).' % (self.lote.nome, n))
         else:
+            if not self.proj.lote_existe(self.lote.nome):
+                # o processador devolveu o lote à fila: vazio aqui não quer dizer revisado
+                self.lote = None
+                self.atualizar()
+                self.abrir_proximo()
+                return
             if self.proj.estado_lote.get(self.lote.nome) != 'concluido':
                 self.proj.registrar([{'tipo': 'lote', 'lote': self.lote.nome, 'estado': 'concluido'}])
             self.statusBar().showMessage(u'%s concluído.' % self.lote.nome, 8000)
