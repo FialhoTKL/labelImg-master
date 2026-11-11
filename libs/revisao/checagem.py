@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
 """Etapa 2 da revisão: o tile inteiro com os polígonos aprovados, para conferir se está completo.
 
+Perfil Rostos e placas: pessoas e veículos achados pelo SAM aparecem em caixas tracejadas laranja (só
+dica, não vão para o dataset). Tile sem nada aprovado mas com pessoa/veículo também vem para cá
+(conferência): Enter confirma que não há rosto/placa visível; B marca o que o modelo deixou passar.
+
   Enter    completo: grava o tile no dataset e abre o próximo
   P        desenha um polígono do objeto que faltou (escolhe a classe em seguida)
   B        caixa do que faltou: a GPU devolve a máscara do SAM (o tile volta para conferência depois)
@@ -27,6 +31,8 @@ from libs.revisao.grade import cor_classe
 from libs.shape import POLYGON, RECTANGLE, Shape
 
 CINZA = '__cinza__'
+NOMES_DICA = {'person': u'pessoa', 'car': u'carro', 'truck': u'caminhão', 'bus': u'ônibus',
+              'motorcycle': u'moto'}
 
 
 class ShapeCinza(Shape):
@@ -154,14 +160,18 @@ class Checagem(QWidget):
         else:
             for x, classe in self.lote.aprovadas(tile['nome']):
                 formas.append(self._forma(classe, x['poligono'], x['id']))
+        self._i_dica = -1
+        self.canvas.dicas = [tuple(d['caixa']) + (NOMES_DICA.get(d['prompt'], d['prompt']),)
+                             for d in tile.get('conferir', [])]
         self.canvas.load_shapes(formas)
         self.canvas.set_editing(True)
         self.historico = []
         self._base = self._estado()
         self._grupo = False
         prog = self.lote.progresso()['tiles']
-        self.lb_titulo.setText(u'%s  ·  tile %d de %d  ·  %s  ·  %d objetos' % (
-            self.lote.nome, prog[0] + 1, prog[1], tile['nome'], len(formas)))
+        conf = u'CONFERIR: há rosto ou placa que o modelo não marcou?  ·  ' if self.lote.a_conferir(tile['nome']) else u''
+        self.lb_titulo.setText(u'%s%s  ·  tile %d de %d  ·  %s  ·  %d objetos' % (
+            conf, self.lote.nome, prog[0] + 1, prog[1], tile['nome'], len(formas)))
         self._atualizar_lista()
         self.ajustar()
         self.canvas.setFocus()
@@ -472,6 +482,12 @@ class Checagem(QWidget):
                 self.lista.addItem(it)
         if not formas:
             self.lista.addItem(QListWidgetItem(u'nenhum objeto aprovado'))
+        n_dica = Counter(d[4] for d in self.canvas.dicas)
+        for nome in sorted(n_dica, key=lambda k: (-n_dica[k], k)):
+            it = QListWidgetItem(u'%s   %d  (conferir)' % (nome, n_dica[nome]))
+            it.setForeground(QColor(220, 120, 0))
+            it.setData(Qt.UserRole, (u'dica', nome))
+            self.lista.addItem(it)
         self.lb_titulo.setText(self.lb_titulo.text().rsplit(u'  ·  ', 1)[0] + u'  ·  %d objetos' % len(formas))
 
     def _ir_para_classe(self, it):
@@ -480,6 +496,9 @@ class Checagem(QWidget):
         if not classe:
             return
         c = self.canvas
+        if isinstance(classe, (tuple, list)):
+            self._ir_para_dica(classe[1])
+            return
         formas = [s for s in self._formas() if s.label == classe]
         if not formas:
             return
@@ -491,6 +510,24 @@ class Checagem(QWidget):
         meio = (r.center() + off) * c.scale
         self.scroll.ensureVisible(int(meio.x()), int(meio.y()),
                                   int(r.width() * c.scale / 2) + 40, int(r.height() * c.scale / 2) + 40)
+        c.setFocus()
+
+    def _ir_para_dica(self, nome):
+        """Próxima pessoa/veículo (circular): zoom de perto, para ver se há rosto ou placa."""
+        c = self.canvas
+        caixas = [d for d in c.dicas if d[4] == nome]
+        if not caixas:
+            return
+        self._i_dica = (getattr(self, '_i_dica', -1) + 1) % len(caixas)
+        x0, y0, x1, y1, _ = caixas[self._i_dica]
+        vp = self.scroll.viewport()
+        # a caixa ocupa ~60% da vista, sem passar de 4x
+        c.scale = min(4.0, 0.6 * min(vp.width() / max(x1 - x0, 1.0), vp.height() / max(y1 - y0, 1.0)))
+        c.resize(max(vp.width(), int(c.pixmap.width() * c.scale)), max(vp.height(), int(c.pixmap.height() * c.scale)))
+        meio = (QPointF((x0 + x1) / 2.0, (y0 + y1) / 2.0) + c.offset_to_center()) * c.scale
+        self.scroll.horizontalScrollBar().setValue(int(meio.x() - vp.width() / 2.0))
+        self.scroll.verticalScrollBar().setValue(int(meio.y() - vp.height() / 2.0))
+        c.update()
         c.setFocus()
 
     # --- zoom ---------------------------------------------------------------

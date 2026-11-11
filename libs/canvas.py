@@ -71,6 +71,8 @@ class Canvas(QWidget):
         self.edicao_rapida = False
         self._clique_vertice = None
         self.pos_roda = None      # posição do mouse na última roda (zoom centrado no mouse)
+        # modo revisão: caixas só desenhadas (não são formas): [(x0, y0, x1, y1, texto)] em px da imagem
+        self.dicas = []
 
         # initialisation for panning
         self.pan_initial_pos = QPoint()
@@ -619,6 +621,18 @@ class Canvas(QWidget):
             painter.end()
 
         p.drawPixmap(0, 0, temp)
+        if self.dicas:
+            caneta = QPen(QColor(255, 140, 0), 2, Qt.DashLine)
+            caneta.setCosmetic(True)
+            p.setPen(caneta)
+            p.setBrush(Qt.NoBrush)
+            fonte = p.font()
+            fonte.setPointSizeF(max(8.0, 11.0 / max(self.scale, 1e-3)))
+            p.setFont(fonte)
+            for x0, y0, x1, y1, texto in self.dicas:
+                p.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+                if texto:
+                    p.drawText(QPointF(x0, y0 - 3.0 / max(self.scale, 1e-3)), texto)
         Shape.scale = self.scale
         Shape.label_font_size = self.label_font_size
         for shape in self.shapes:

@@ -156,8 +156,9 @@ class JanelaRevisao(QMainWindow):
                 self.atualizar()
                 self.abrir_proximo()
                 return
-            if self.proj.estado_lote.get(self.lote.nome) != 'concluido':
-                self.proj.registrar([{'tipo': 'lote', 'lote': self.lote.nome, 'estado': 'concluido'}])
+            if self.proj.estado(self.lote.nome) != 'concluido':
+                self.proj.registrar([{'tipo': 'lote', 'lote': self.lote.nome, 'estado': 'concluido',
+                                      'conferir': self.lote.com_conferir}])
             self.statusBar().showMessage(u'%s concluído.' % self.lote.nome, 8000)
             self.atualizar()
             self.abrir_proximo()

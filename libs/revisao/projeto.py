@@ -9,7 +9,13 @@ decisoes.jsonl é append-only e é o checkpoint: cada ação vira uma linha grav
   tile                 {lote, tile, estado: completo|descartado|aguardando, split, poligonos, cinza, arquivos}
                        aguardando = o revisor pediu à GPU a máscara de caixas desenhadas (pedidos)
   desfazer_tile        {tile}
-  lote                 {lote, estado: concluido}
+  lote                 {lote, estado: concluido, conferir}
+                       conferir = o lote já tinha a busca de pessoas/veículos quando foi concluído
+
+Conferência (perfil Rostos e placas, config `conferir` do processador): tile com pessoa ou veículo e
+nenhuma instância aprovada na grade também vai para a checagem, para o revisor ver se faltou rosto/placa.
+Um lote concluído antes de o processador procurar pessoas/veículos nele (processado/conferir.json)
+volta para a fila só com esses tiles.
 
 Entre uma confirmação e outra, o que o revisor já marcou (página da grade, polígonos do tile)
 fica em revisao/rascunho.json, gravado a cada mudança: fechar ou cair no meio não perde nada.
@@ -47,6 +53,8 @@ class Lote(object):
         self.nome = nome
         pasta = proj.p('processado', nome)
         info = _ler_json(os.path.join(pasta, 'lote.json'), {})
+        # lido antes dos tiles: se já está em conferir.json, os instancias.json já têm 'conferir'
+        self.com_conferir = nome in proj.conferir_prontos()
         self.classes = info.get('classes', proj.classes)
         self.tiles = []
         self.inst = {}
@@ -96,8 +104,12 @@ class Lote(object):
                 out.append((self.inst[i], d['classe']))
         return out
 
+    def a_conferir(self, tile):
+        """Pessoa/veículo no tile e nenhuma instância aprovada: o modelo pode ter deixado passar algo."""
+        return bool(self.tile_por_nome[tile].get('conferir')) and not self.aprovadas(tile)
+
     def precisa_checar(self, tile):
-        return bool(self.aprovadas(tile)) or _hash01('fundo|' + tile) < FRAC_FUNDO
+        return bool(self.aprovadas(tile)) or self.a_conferir(tile) or _hash01('fundo|' + tile) < FRAC_FUNDO
 
     def resposta(self, pedido_id):
         """Polígono devolvido pelo processador para um pedido (caixa -> SAM), ou None se ainda não chegou."""
@@ -148,6 +160,7 @@ class ProjetoRevisao(object):
         self.dec = {}          # id -> último registro 'instancia'
         self.tiles = {}        # tile -> registro 'tile'
         self.estado_lote = {}  # lote -> estado
+        self.conferidos = set()  # lotes concluídos já com a conferência de pessoas/veículos
         self.historico = []    # (t, decisao, classe_orig) para métricas
         self.classes = []
         self._reler()
@@ -187,6 +200,8 @@ class ProjetoRevisao(object):
             self.tiles.pop(r['tile'], None)
         elif tipo == 'lote':
             self.estado_lote[r['lote']] = r['estado']
+            if r.get('conferir'):
+                self.conferidos.add(r['lote'])
 
     def registrar(self, registros):
         """Grava e aplica uma lista de registros de uma vez (uma página da grade = uma chamada)."""
@@ -245,6 +260,21 @@ class ProjetoRevisao(object):
             self._chave_reset = chave
             self._fechados, self._info = set(), {}
 
+    def conferir_prontos(self):
+        """Lotes em que o processador já procurou pessoas/veículos (processado/conferir.json), em cache."""
+        arq = self.p('processado', 'conferir.json')
+        chave = os.path.getmtime(arq) if os.path.exists(arq) else None
+        if getattr(self, '_conf', None) is None or self._conf[0] != chave:
+            self._conf = (chave, set((_ler_json(arq, {}) or {}).get('lotes', [])) if chave else set())
+        return self._conf[1]
+
+    def estado(self, nome):
+        """Concluído só vale se a conferência de pessoas/veículos já estava pronta quando concluiu."""
+        e = self.estado_lote.get(nome)
+        if e == 'concluido' and nome not in self.conferidos and nome in self.conferir_prontos():
+            return None
+        return e
+
     def lote_existe(self, nome):
         """lote.json ainda está lá (o processador pode ter devolvido o lote à fila para refazer)."""
         if os.path.exists(self.p('processado', nome, 'lote.json')):
@@ -262,6 +292,7 @@ class ProjetoRevisao(object):
 
     def lotes(self):
         self._resetado()
+        self.conferir_prontos()
         out = []
         abertos = 0
         for l in self._indice():
@@ -272,7 +303,7 @@ class ProjetoRevisao(object):
                 else:
                     abertos += 1
             out.append({'nome': nome, 'n_panoramas': len(l['panoramas']), 'fechado': nome in self._fechados,
-                        'estado': self.estado_lote.get(nome)})
+                        'estado': self.estado(nome)})
         return out
 
     def info_lote(self, nome):
